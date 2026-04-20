@@ -52,7 +52,6 @@ function slug(track: string, artist: string) {
 
 function getLinks(track: string, artist: string) {
   const q = slug(track, artist);
-
   return {
     spotify: `https://open.spotify.com/search/${q}`,
     apple: `https://music.apple.com/us/search?term=${q}`,
@@ -79,13 +78,12 @@ function normalize(input: string) {
 export default function App() {
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const [user, setUser] = useState<User | null>(null);
-  const [authLoading, setAuthLoading] = useState(true);
-
   const [isMobile, setIsMobile] = useState(
     typeof window !== "undefined" ? window.innerWidth < 768 : false
   );
 
+  const [user, setUser] = useState<User | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
   const [email, setEmail] = useState("");
 
   const [tracks, setTracks] = useState<TrackRow[]>([]);
@@ -94,7 +92,6 @@ export default function App() {
   const [track, setTrack] = useState("");
   const [artist, setArtist] = useState("");
   const [tags, setTags] = useState("");
-
   const [search, setSearch] = useState("");
   const [activeTags, setActiveTags] = useState<string[]>([]);
 
@@ -102,6 +99,16 @@ export default function App() {
   const [editTrack, setEditTrack] = useState("");
   const [editArtist, setEditArtist] = useState("");
   const [editTags, setEditTags] = useState("");
+
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
 
   useEffect(() => {
     const boot = async () => {
@@ -135,12 +142,6 @@ export default function App() {
     return () => subscription.unsubscribe();
   }, []);
 
-  useEffect(() => {
-    const onResize = () => setIsMobile(window.innerWidth < 768);
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, []);
-
   const allTags = useMemo(() => {
     return Array.from(
       new Set([...starterTags, ...tracks.flatMap((t) => t.tags || [])])
@@ -149,16 +150,10 @@ export default function App() {
 
   const filtered = useMemo(() => {
     return tracks.filter((t) => {
-      const text =
-        `${t.track} ${t.artist} ${(t.tags || []).join(" ")}`.toLowerCase();
-
-      const matchesSearch =
-        !search || text.includes(search.toLowerCase());
-
+      const text = `${t.track} ${t.artist} ${(t.tags || []).join(" ")}`.toLowerCase();
+      const matchesSearch = !search || text.includes(search.toLowerCase());
       const matchesTags =
-        activeTags.length === 0 ||
-        activeTags.every((tag) => t.tags.includes(tag));
-
+        activeTags.length === 0 || activeTags.every((tag) => t.tags.includes(tag));
       return matchesSearch && matchesTags;
     });
   }, [tracks, search, activeTags]);
@@ -172,10 +167,13 @@ export default function App() {
       .eq("user_id", userId)
       .order("created_at", { ascending: false });
 
-    if (!error) {
-      setTracks((data as TrackRow[]) || []);
+    if (error) {
+      console.error(error);
+      setLoadingTracks(false);
+      return;
     }
 
+    setTracks((data as TrackRow[]) || []);
     setLoadingTracks(false);
   }
 
@@ -183,7 +181,7 @@ export default function App() {
     if (!email.trim()) return;
 
     const { error } = await supabase.auth.signInWithOtp({
-      email,
+      email: email.trim(),
       options: {
         emailRedirectTo: window.location.origin,
       },
@@ -191,9 +189,10 @@ export default function App() {
 
     if (error) {
       alert(error.message);
-    } else {
-      alert("Check your email for the magic link.");
+      return;
     }
+
+    alert("Check your email for the magic link.");
   }
 
   async function signOut() {
@@ -220,20 +219,18 @@ export default function App() {
     setTrack("");
     setArtist("");
     setTags("");
-
     await loadTracks(user.id);
+    setTimeout(() => inputRef.current?.focus(), 0);
 
     if (navigator.vibrate) {
       navigator.vibrate(10);
     }
-
-    setTimeout(() => inputRef.current?.focus(), 0);
   }
 
   async function saveEdit(id: string) {
-    if (!user || !editTrack.trim()) return;
+    if (!editTrack.trim() || !user) return;
 
-    await supabase
+    const { error } = await supabase
       .from("tracks")
       .update({
         track: editTrack.trim(),
@@ -243,32 +240,54 @@ export default function App() {
       .eq("id", id)
       .eq("user_id", user.id);
 
+    if (error) {
+      alert(error.message);
+      return;
+    }
+
     setEditingId(null);
     setEditTrack("");
     setEditArtist("");
     setEditTags("");
-
     await loadTracks(user.id);
+  }
+
+  function startEdit(t: TrackRow) {
+    setEditingId(t.id);
+    setEditTrack(t.track || "");
+    setEditArtist(t.artist || "");
+    setEditTags((t.tags || []).join(", "));
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+    setEditTrack("");
+    setEditArtist("");
+    setEditTags("");
   }
 
   async function deleteTrack(id: string) {
     if (!user) return;
     if (!window.confirm("Delete this track?")) return;
 
-    await supabase
+    const { error } = await supabase
       .from("tracks")
       .delete()
       .eq("id", id)
       .eq("user_id", user.id);
 
+    if (error) {
+      alert(error.message);
+      return;
+    }
+
     await loadTracks(user.id);
   }
 
-  function startEdit(t: TrackRow) {
-    setEditingId(t.id);
-    setEditTrack(t.track);
-    setEditArtist(t.artist);
-    setEditTags((t.tags || []).join(", "));
+  function toggleTag(tag: string) {
+    setActiveTags((prev) =>
+      prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]
+    );
   }
 
   function clearFilters() {
@@ -276,22 +295,16 @@ export default function App() {
     setActiveTags([]);
   }
 
-  function toggleTag(tag: string) {
-    setActiveTags((prev) =>
-      prev.includes(tag)
-        ? prev.filter((x) => x !== tag)
-        : [...prev, tag]
-    );
-  }
-
   function emailList() {
-    const rows = filtered.length ? filtered : tracks;
+    const source = filtered.length ? filtered : tracks;
 
-    const body = rows
+    const body = source
       .map((t) => {
-        const l = getLinks(t.track, t.artist);
+        const l = getLinks(t.track, t.artist || "");
+        const tagLine = t.tags?.length ? `#${t.tags.join(" #")}` : "No tags";
 
-        return `${t.artist} - ${t.track}
+        return `${t.artist ? `${t.artist} - ` : ""}${t.track}
+${tagLine}
 
 Spotify: ${l.spotify}
 Apple: ${l.apple}
@@ -299,7 +312,8 @@ Amazon: ${l.amazon}
 Discogs: ${l.discogs}
 eBay: ${l.ebay}
 Bandcamp: ${l.bandcamp}
-SoundCloud: ${l.soundcloud}`;
+SoundCloud: ${l.soundcloud}
+Stores: ${l.stores}`;
       })
       .join("\n\n");
 
@@ -308,35 +322,45 @@ SoundCloud: ${l.soundcloud}`;
     )}&body=${encodeURIComponent(body)}`;
   }
 
-  function Card({ t }: { t: TrackRow }) {
+  const sourceBtnClass =
+    "bg-zinc-800 text-zinc-300 hover:bg-zinc-700 border border-zinc-700 min-h-[40px] flex items-center justify-center";
+
+  function TrackCard({ t }: { t: TrackRow }) {
     return (
       <div className="p-3 bg-zinc-900 rounded-xl border border-zinc-800 space-y-3">
         {editingId === t.id ? (
           <>
             <Input
               value={editTrack}
-              onChange={(e: any) => setEditTrack(e.target.value)}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                setEditTrack(e.target.value)
+              }
+              placeholder="Track"
             />
             <Input
               value={editArtist}
-              onChange={(e: any) => setEditArtist(e.target.value)}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                setEditArtist(e.target.value)
+              }
+              placeholder="Artist"
             />
             <Input
               value={editTags}
-              onChange={(e: any) => setEditTags(e.target.value)}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                setEditTags(e.target.value)
+              }
+              placeholder="Tags"
             />
-
             <div className="flex gap-2">
               <Button
                 onClick={() => saveEdit(t.id)}
-                className="bg-zinc-100 text-zinc-900"
+                className="bg-zinc-100 text-zinc-900 hover:bg-zinc-200"
               >
                 Save
               </Button>
-
               <Button
-                onClick={() => setEditingId(null)}
-                className="bg-zinc-800 border border-zinc-700"
+                onClick={cancelEdit}
+                className="bg-zinc-800 text-zinc-300 hover:bg-zinc-700 border border-zinc-700"
               >
                 Cancel
               </Button>
@@ -352,38 +376,78 @@ SoundCloud: ${l.soundcloud}`;
             </div>
 
             <div className="flex gap-2 flex-wrap">
-              {t.tags.map((tag) => (
-                <Badge key={tag}>#{tag}</Badge>
+              {(t.tags || []).map((tag) => (
+                <button
+                  key={tag}
+                  onClick={() => toggleTag(tag)}
+                  className="px-2 py-1 text-xs rounded-full bg-zinc-800 text-zinc-200"
+                >
+                  #{tag}
+                </button>
               ))}
             </div>
 
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-              {Object.entries(getLinks(t.track, t.artist)).map(
-                ([name, url]) => (
-                  <Button
-                    key={name}
-                    onClick={() =>
-                      window.open(url, "_blank")
-                    }
-                    className="bg-zinc-800 border border-zinc-700"
-                  >
-                    {name}
-                  </Button>
-                )
-              )}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+              <Button
+                className={sourceBtnClass}
+                onClick={() => window.open(getLinks(t.track, t.artist).spotify, "_blank")}
+              >
+                Spotify
+              </Button>
+              <Button
+                className={sourceBtnClass}
+                onClick={() => window.open(getLinks(t.track, t.artist).apple, "_blank")}
+              >
+                Apple
+              </Button>
+              <Button
+                className={sourceBtnClass}
+                onClick={() => window.open(getLinks(t.track, t.artist).amazon, "_blank")}
+              >
+                Amazon
+              </Button>
+              <Button
+                className={sourceBtnClass}
+                onClick={() => window.open(getLinks(t.track, t.artist).discogs, "_blank")}
+              >
+                Discogs
+              </Button>
+              <Button
+                className={sourceBtnClass}
+                onClick={() => window.open(getLinks(t.track, t.artist).ebay, "_blank")}
+              >
+                eBay
+              </Button>
+              <Button
+                className={sourceBtnClass}
+                onClick={() => window.open(getLinks(t.track, t.artist).bandcamp, "_blank")}
+              >
+                Bandcamp
+              </Button>
+              <Button
+                className={sourceBtnClass}
+                onClick={() => window.open(getLinks(t.track, t.artist).soundcloud, "_blank")}
+              >
+                SoundCloud
+              </Button>
+              <Button
+                className={sourceBtnClass}
+                onClick={() => window.open(getLinks(t.track, t.artist).stores, "_blank")}
+              >
+                Stores
+              </Button>
             </div>
 
             <div className="flex gap-2">
               <Button
                 onClick={() => startEdit(t)}
-                className="bg-zinc-800 border border-zinc-700"
+                className="bg-zinc-800 text-zinc-300 hover:bg-zinc-700 border border-zinc-700"
               >
                 Edit
               </Button>
-
               <Button
                 onClick={() => deleteTrack(t.id)}
-                className="bg-zinc-800 border border-zinc-700"
+                className="bg-zinc-800 text-zinc-300 hover:bg-zinc-700 border border-zinc-700"
               >
                 Delete
               </Button>
@@ -397,7 +461,7 @@ SoundCloud: ${l.soundcloud}`;
   if (authLoading) {
     return (
       <div className="min-h-screen bg-zinc-950 text-zinc-100 p-6">
-        Loading...
+        <div className="max-w-3xl mx-auto">Loading...</div>
       </div>
     );
   }
@@ -405,24 +469,29 @@ SoundCloud: ${l.soundcloud}`;
   if (!user) {
     return (
       <div className="min-h-screen bg-zinc-950 text-zinc-100 p-6">
-        <div className="max-w-xl mx-auto space-y-4">
-          <div className="text-3xl font-semibold">
-            GreatCrates
+        <div className="max-w-xl mx-auto space-y-6">
+          <div className="border-b border-zinc-800 pb-5">
+            <div className="text-2xl md:text-3xl font-semibold tracking-tight">
+              GreatCrates
+            </div>
+            <div className="text-sm text-zinc-400 mt-1">
+              Capture. Organize. Build your set.
+            </div>
           </div>
 
           <div className="p-4 bg-zinc-900 rounded-2xl border border-zinc-800 space-y-3">
-            <div>Sign in to sync your crates</div>
-
+            <div className="text-sm font-medium">Sign in to sync your crates</div>
             <Input
               value={email}
-              onChange={(e: any) => setEmail(e.target.value)}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                setEmail(e.target.value)
+              }
               placeholder="Email"
               type="email"
             />
-
             <Button
               onClick={signIn}
-              className="w-full bg-zinc-100 text-zinc-900"
+              className="w-full bg-zinc-100 text-zinc-900 hover:bg-zinc-200"
             >
               Send Magic Link
             </Button>
@@ -435,109 +504,328 @@ SoundCloud: ${l.soundcloud}`;
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 p-4 md:p-6">
       <div className="max-w-6xl mx-auto space-y-6">
-        <div className="flex justify-between items-center border-b border-zinc-800 pb-4">
+        <div className="flex items-center justify-between border-b border-zinc-800 pb-5">
           <div>
-            <div className="text-3xl font-semibold">
+            <div className="text-2xl md:text-3xl font-semibold tracking-tight">
               GreatCrates
             </div>
-            <div className="text-sm text-zinc-400">
+            <div className="text-sm text-zinc-400 mt-1">
               Capture. Organize. Build your set.
             </div>
           </div>
 
           <div className="flex gap-2">
-            <Button
-              onClick={emailList}
-              className="bg-zinc-100 text-zinc-900"
-            >
-              Email List
-            </Button>
-
+            {!isMobile && (
+              <Button
+                onClick={emailList}
+                className="bg-zinc-100 text-zinc-900 hover:bg-zinc-200"
+              >
+                Email List
+              </Button>
+            )}
             <Button
               onClick={signOut}
-              className="bg-zinc-800 border border-zinc-700"
+              className="bg-zinc-800 text-zinc-300 hover:bg-zinc-700 border border-zinc-700"
             >
               Sign Out
             </Button>
           </div>
         </div>
 
-        <div className="grid md:grid-cols-2 gap-6">
+        {isMobile ? (
           <div className="space-y-4">
             <div className="p-4 bg-zinc-900 rounded-2xl border border-zinc-800 space-y-3">
-              <div>Quick Add</div>
+              <div className="text-sm font-medium">Quick Capture</div>
 
               <Input
                 ref={inputRef}
                 value={track}
-                onChange={(e: any) => setTrack(e.target.value)}
-                placeholder="Track"
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                  setTrack(e.target.value)
+                }
+                onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) =>
+                  e.key === "Enter" && addTrack()
+                }
+                placeholder="Add track..."
+                className="text-lg py-3"
               />
 
               <Input
                 value={artist}
-                onChange={(e: any) => setArtist(e.target.value)}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                  setArtist(e.target.value)
+                }
                 placeholder="Artist"
               />
 
               <Input
                 value={tags}
-                onChange={(e: any) => setTags(e.target.value)}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                  setTags(e.target.value)
+                }
                 placeholder="Tags"
               />
 
+              <div className="flex gap-2 flex-wrap">
+                {starterTags.map((tag) => (
+                  <button
+                    key={tag}
+                    onClick={() =>
+                      setTags((prev) =>
+                        Array.from(new Set([...normalize(prev), tag])).join(", ")
+                      )
+                    }
+                    className="px-2 py-1 text-xs border border-zinc-700 rounded-full bg-zinc-900 hover:bg-zinc-800"
+                  >
+                    #{tag}
+                  </button>
+                ))}
+              </div>
+
               <Button
                 onClick={addTrack}
-                className="bg-zinc-100 text-zinc-900"
+                className="w-full bg-zinc-100 text-zinc-900 hover:bg-zinc-200"
               >
-                Add Track
+                Save
+              </Button>
+
+              <Button
+                onClick={emailList}
+                className="w-full bg-zinc-800 text-zinc-300 hover:bg-zinc-700 border border-zinc-700"
+              >
+                Email List
               </Button>
             </div>
 
-            <div className="space-y-2">
-              {loadingTracks
-                ? "Loading..."
-                : tracks.map((t) => <Card key={t.id} t={t} />)}
-            </div>
-          </div>
+            <div className="p-4 bg-zinc-900 rounded-2xl border border-zinc-800 space-y-3">
+              <div className="text-sm font-medium">Search Your Crates</div>
 
-          <div className="space-y-4">
-            <Input
-              value={search}
-              onChange={(e: any) => setSearch(e.target.value)}
-              placeholder="Search tracks or artists"
-            />
+              <Input
+                value={search}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                  setSearch(e.target.value)
+                }
+                placeholder="Search tracks, artists, or hashtags"
+              />
 
-            <div className="flex flex-wrap gap-2">
-              {allTags.map((tag) => (
+              <div className="flex items-center justify-between">
+                <div className="text-xs text-zinc-400">Filter by hashtag</div>
                 <button
-                  key={tag}
-                  onClick={() => toggleTag(tag)}
-                  className={`px-2 py-1 text-xs rounded-full border ${
-                    activeTags.includes(tag)
-                      ? "bg-zinc-100 text-zinc-900 border-zinc-100"
-                      : "bg-zinc-900 text-zinc-300 border-zinc-700"
-                  }`}
+                  onClick={clearFilters}
+                  className="text-xs text-zinc-400 hover:text-zinc-200"
                 >
-                  #{tag}
+                  Clear
                 </button>
-              ))}
+              </div>
 
-              <button
-                onClick={clearFilters}
-                className="text-xs text-zinc-400"
-              >
-                Clear
-              </button>
+              <div className="flex flex-wrap gap-2">
+                {allTags.map((tag) => (
+                  <button
+                    key={tag}
+                    onClick={() => toggleTag(tag)}
+                    className={`px-2 py-1 text-xs rounded-full border ${
+                      activeTags.includes(tag)
+                        ? "bg-zinc-100 text-zinc-900 border-zinc-100"
+                        : "bg-zinc-900 text-zinc-300 border-zinc-700"
+                    }`}
+                  >
+                    #{tag}
+                  </button>
+                ))}
+              </div>
             </div>
 
-            <div className="space-y-2">
+            <div className="text-sm text-zinc-400">
+              {loadingTracks ? "Loading..." : `Matching Tracks (${filtered.length})`}
+            </div>
+
+            {filtered.map((t) => (
+              <TrackCard key={t.id} t={t} />
+            ))}
+          </div>
+        ) : (
+          <div className="grid md:grid-cols-2 gap-6">
+            <div className="space-y-4">
+              <div className="p-4 bg-zinc-900 rounded-2xl border border-zinc-800 space-y-3">
+                <div className="text-sm font-medium">Quick Add</div>
+
+                <Input
+                  ref={inputRef}
+                  value={track}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                    setTrack(e.target.value)
+                  }
+                  onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) =>
+                    e.key === "Enter" && addTrack()
+                  }
+                  placeholder="Track"
+                />
+
+                <Input
+                  value={artist}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                    setArtist(e.target.value)
+                  }
+                  placeholder="Artist"
+                />
+
+                <Input
+                  value={tags}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                    setTags(e.target.value)
+                  }
+                  placeholder="Tags"
+                />
+
+                <div className="flex gap-2 flex-wrap">
+                  {starterTags.map((tag) => (
+                    <button
+                      key={tag}
+                      onClick={() =>
+                        setTags((prev) =>
+                          Array.from(new Set([...normalize(prev), tag])).join(", ")
+                        )
+                      }
+                      className="px-2 py-1 text-xs border border-zinc-700 rounded-full bg-zinc-900 hover:bg-zinc-800"
+                    >
+                      #{tag}
+                    </button>
+                  ))}
+                </div>
+
+                <Button
+                  onClick={addTrack}
+                  className="bg-zinc-100 text-zinc-900 hover:bg-zinc-200"
+                >
+                  Add Track
+                </Button>
+              </div>
+
+              <div className="space-y-2">
+                <div className="text-sm text-zinc-400">
+                  {loadingTracks ? "Loading..." : `Saved Tracks (${tracks.length})`}
+                </div>
+
+                {tracks.map((t) => (
+                  <div
+                    key={t.id}
+                    className="p-3 bg-zinc-900 rounded-xl border border-zinc-800"
+                  >
+                    {editingId === t.id ? (
+                      <div className="space-y-3">
+                        <Input
+                          value={editTrack}
+                          onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                            setEditTrack(e.target.value)
+                          }
+                          placeholder="Track"
+                        />
+                        <Input
+                          value={editArtist}
+                          onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                            setEditArtist(e.target.value)
+                          }
+                          placeholder="Artist"
+                        />
+                        <Input
+                          value={editTags}
+                          onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                            setEditTags(e.target.value)
+                          }
+                          placeholder="Tags"
+                        />
+                        <div className="flex gap-2">
+                          <Button
+                            onClick={() => saveEdit(t.id)}
+                            className="bg-zinc-100 text-zinc-900 hover:bg-zinc-200"
+                          >
+                            Save
+                          </Button>
+                          <Button
+                            onClick={cancelEdit}
+                            className="bg-zinc-800 text-zinc-300 hover:bg-zinc-700 border border-zinc-700"
+                          >
+                            Cancel
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        <div className="font-medium">{t.track}</div>
+                        <div className="text-sm text-zinc-400">
+                          {t.artist || "Unknown artist"}
+                        </div>
+                        <div className="flex gap-2 flex-wrap">
+                          {(t.tags || []).map((tag) => (
+                            <Badge key={tag}>#{tag}</Badge>
+                          ))}
+                        </div>
+                        <div className="flex gap-2">
+                          <Button
+                            onClick={() => startEdit(t)}
+                            className="bg-zinc-800 text-zinc-300 hover:bg-zinc-700 border border-zinc-700"
+                          >
+                            Edit
+                          </Button>
+                          <Button
+                            onClick={() => deleteTrack(t.id)}
+                            className="bg-zinc-800 text-zinc-300 hover:bg-zinc-700 border border-zinc-700"
+                          >
+                            Delete
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              <Input
+                value={search}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                  setSearch(e.target.value)
+                }
+                placeholder="Search tracks, artists, or hashtags"
+              />
+
+              <div className="flex items-center justify-between">
+                <div className="text-sm text-zinc-400">Filter by hashtag</div>
+                <button
+                  onClick={clearFilters}
+                  className="text-xs text-zinc-400 hover:text-zinc-200"
+                >
+                  Clear filters
+                </button>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                {allTags.map((tag) => (
+                  <button
+                    key={tag}
+                    onClick={() => toggleTag(tag)}
+                    className={`px-2 py-1 text-xs rounded-full border ${
+                      activeTags.includes(tag)
+                        ? "bg-zinc-100 text-zinc-900 border-zinc-100"
+                        : "bg-zinc-900 text-zinc-300 border-zinc-700"
+                    }`}
+                  >
+                    #{tag}
+                  </button>
+                ))}
+              </div>
+
+              <div className="text-sm text-zinc-400">
+                {loadingTracks ? "Loading..." : `${filtered.length} matching tracks`}
+              </div>
+
               {filtered.map((t) => (
-                <Card key={t.id} t={t} />
+                <TrackCard key={t.id} t={t} />
               ))}
             </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   );
