@@ -1,4 +1,19 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { createClient, User } from "@supabase/supabase-js";
+
+const supabase = createClient(
+  import.meta.env.VITE_SUPABASE_URL as string,
+  import.meta.env.VITE_SUPABASE_ANON_KEY as string
+);
+
+type TrackRow = {
+  id: string;
+  user_id: string;
+  track: string;
+  artist: string;
+  tags: string[];
+  created_at: string;
+};
 
 function Button({ className = "", children, ...props }: any) {
   return (
@@ -29,23 +44,6 @@ function Badge({ children }: any) {
   );
 }
 
-const STORAGE_KEY = "greatcrates_tracks";
-
-const starterTracks = [
-  {
-    id: 1,
-    track: "Show Me Love",
-    artist: "Robin S",
-    tags: ["house", "classic"],
-  },
-  {
-    id: 2,
-    track: "Finally",
-    artist: "CeCe Peniston",
-    tags: ["house", "vocals"],
-  },
-];
-
 const starterTags = ["house", "hip-hop", "warmup", "late-night", "classic"];
 
 function slug(track: string, artist: string) {
@@ -54,12 +52,15 @@ function slug(track: string, artist: string) {
 
 function getLinks(track: string, artist: string) {
   const q = slug(track, artist);
+
   return {
     spotify: `https://open.spotify.com/search/${q}`,
     apple: `https://music.apple.com/us/search?term=${q}`,
     amazon: `https://www.amazon.com/s?k=${q}+mp3`,
     discogs: `https://www.discogs.com/search/?q=${q}&type=all`,
     ebay: `https://www.ebay.com/sch/i.html?_nkw=${q}+vinyl`,
+    bandcamp: `https://bandcamp.com/search?q=${q}`,
+    soundcloud: `https://soundcloud.com/search?q=${q}`,
     stores: `https://www.google.com/search?q=record+stores+near+me`,
   };
 }
@@ -77,32 +78,61 @@ function normalize(input: string) {
 
 export default function App() {
   const inputRef = useRef<HTMLInputElement>(null);
+
+  const [user, setUser] = useState<User | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+
   const [isMobile, setIsMobile] = useState(
     typeof window !== "undefined" ? window.innerWidth < 768 : false
   );
 
-  const [tracks, setTracks] = useState(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      return saved ? JSON.parse(saved) : starterTracks;
-    } catch {
-      return starterTracks;
-    }
-  });
+  const [email, setEmail] = useState("");
+
+  const [tracks, setTracks] = useState<TrackRow[]>([]);
+  const [loadingTracks, setLoadingTracks] = useState(false);
 
   const [track, setTrack] = useState("");
   const [artist, setArtist] = useState("");
   const [tags, setTags] = useState("");
+
   const [search, setSearch] = useState("");
   const [activeTags, setActiveTags] = useState<string[]>([]);
 
-  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [editTrack, setEditTrack] = useState("");
   const [editArtist, setEditArtist] = useState("");
   const [editTags, setEditTags] = useState("");
 
   useEffect(() => {
-    inputRef.current?.focus();
+    const boot = async () => {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      setUser(session?.user ?? null);
+      setAuthLoading(false);
+
+      if (session?.user) {
+        await loadTracks(session.user.id);
+      }
+    };
+
+    boot();
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      const nextUser = session?.user ?? null;
+      setUser(nextUser);
+
+      if (nextUser) {
+        await loadTracks(nextUser.id);
+      } else {
+        setTracks([]);
+      }
+    });
+
+    return () => subscription.unsubscribe();
   }, []);
 
   useEffect(() => {
@@ -111,63 +141,165 @@ export default function App() {
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(tracks));
-  }, [tracks]);
-
   const allTags = useMemo(() => {
     return Array.from(
-      new Set([...starterTags, ...tracks.flatMap((t: any) => t.tags || [])])
+      new Set([...starterTags, ...tracks.flatMap((t) => t.tags || [])])
     ).sort();
   }, [tracks]);
 
   const filtered = useMemo(() => {
-    return tracks.filter((t: any) => {
-      const text = `${t.track} ${t.artist} ${(t.tags || []).join(" ")}`.toLowerCase();
-      const matchesSearch = !search || text.includes(search.toLowerCase());
+    return tracks.filter((t) => {
+      const text =
+        `${t.track} ${t.artist} ${(t.tags || []).join(" ")}`.toLowerCase();
+
+      const matchesSearch =
+        !search || text.includes(search.toLowerCase());
+
       const matchesTags =
         activeTags.length === 0 ||
-        activeTags.every((tag) => (t.tags || []).includes(tag));
+        activeTags.every((tag) => t.tags.includes(tag));
+
       return matchesSearch && matchesTags;
     });
   }, [tracks, search, activeTags]);
 
-  function addTrack() {
-    if (!track.trim()) return;
+  async function loadTracks(userId: string) {
+    setLoadingTracks(true);
 
-    setTracks((prev: any) => [
+    const { data, error } = await supabase
+      .from("tracks")
+      .select("*")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false });
+
+    if (!error) {
+      setTracks((data as TrackRow[]) || []);
+    }
+
+    setLoadingTracks(false);
+  }
+
+  async function signIn() {
+    if (!email.trim()) return;
+
+    const { error } = await supabase.auth.signInWithOtp({
+      email,
+      options: {
+        emailRedirectTo: window.location.origin,
+      },
+    });
+
+    if (error) {
+      alert(error.message);
+    } else {
+      alert("Check your email for the magic link.");
+    }
+  }
+
+  async function signOut() {
+    await supabase.auth.signOut();
+  }
+
+  async function addTrack() {
+    if (!track.trim() || !user) return;
+
+    const { error } = await supabase.from("tracks").insert([
       {
-        id: Date.now(),
+        user_id: user.id,
         track: track.trim(),
         artist: artist.trim(),
         tags: normalize(tags),
       },
-      ...prev,
     ]);
+
+    if (error) {
+      alert(error.message);
+      return;
+    }
 
     setTrack("");
     setArtist("");
     setTags("");
+
+    await loadTracks(user.id);
+
+    if (navigator.vibrate) {
+      navigator.vibrate(10);
+    }
+
     setTimeout(() => inputRef.current?.focus(), 0);
   }
 
+  async function saveEdit(id: string) {
+    if (!user || !editTrack.trim()) return;
+
+    await supabase
+      .from("tracks")
+      .update({
+        track: editTrack.trim(),
+        artist: editArtist.trim(),
+        tags: normalize(editTags),
+      })
+      .eq("id", id)
+      .eq("user_id", user.id);
+
+    setEditingId(null);
+    setEditTrack("");
+    setEditArtist("");
+    setEditTags("");
+
+    await loadTracks(user.id);
+  }
+
+  async function deleteTrack(id: string) {
+    if (!user) return;
+    if (!window.confirm("Delete this track?")) return;
+
+    await supabase
+      .from("tracks")
+      .delete()
+      .eq("id", id)
+      .eq("user_id", user.id);
+
+    await loadTracks(user.id);
+  }
+
+  function startEdit(t: TrackRow) {
+    setEditingId(t.id);
+    setEditTrack(t.track);
+    setEditArtist(t.artist);
+    setEditTags((t.tags || []).join(", "));
+  }
+
+  function clearFilters() {
+    setSearch("");
+    setActiveTags([]);
+  }
+
+  function toggleTag(tag: string) {
+    setActiveTags((prev) =>
+      prev.includes(tag)
+        ? prev.filter((x) => x !== tag)
+        : [...prev, tag]
+    );
+  }
+
   function emailList() {
-    const source = filtered.length ? filtered : tracks;
+    const rows = filtered.length ? filtered : tracks;
 
-    const body = source
-      .map((t: any) => {
-        const l = getLinks(t.track, t.artist || "");
-        const tagLine = t.tags?.length ? `#${t.tags.join(" #")}` : "No tags";
+    const body = rows
+      .map((t) => {
+        const l = getLinks(t.track, t.artist);
 
-        return `${t.artist ? `${t.artist} - ` : ""}${t.track}
-${tagLine}
+        return `${t.artist} - ${t.track}
 
 Spotify: ${l.spotify}
 Apple: ${l.apple}
 Amazon: ${l.amazon}
 Discogs: ${l.discogs}
 eBay: ${l.ebay}
-Stores: ${l.stores}`;
+Bandcamp: ${l.bandcamp}
+SoundCloud: ${l.soundcloud}`;
       })
       .join("\n\n");
 
@@ -176,459 +308,236 @@ Stores: ${l.stores}`;
     )}&body=${encodeURIComponent(body)}`;
   }
 
-  function toggleTag(tag: string) {
-    setActiveTags((prev) =>
-      prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]
-    );
-  }
+  function Card({ t }: { t: TrackRow }) {
+    return (
+      <div className="p-3 bg-zinc-900 rounded-xl border border-zinc-800 space-y-3">
+        {editingId === t.id ? (
+          <>
+            <Input
+              value={editTrack}
+              onChange={(e: any) => setEditTrack(e.target.value)}
+            />
+            <Input
+              value={editArtist}
+              onChange={(e: any) => setEditArtist(e.target.value)}
+            />
+            <Input
+              value={editTags}
+              onChange={(e: any) => setEditTags(e.target.value)}
+            />
 
-  function clearFilters() {
-    setSearch("");
-    setActiveTags([]);
-  }
-
-  function startEdit(t: any) {
-    setEditingId(t.id);
-    setEditTrack(t.track || "");
-    setEditArtist(t.artist || "");
-    setEditTags((t.tags || []).join(", "));
-  }
-
-  function saveEdit(id: number) {
-    if (!editTrack.trim()) return;
-
-    setTracks((prev: any) =>
-      prev.map((t: any) =>
-        t.id === id
-          ? {
-              ...t,
-              track: editTrack.trim(),
-              artist: editArtist.trim(),
-              tags: normalize(editTags),
-            }
-          : t
-      )
-    );
-
-    setEditingId(null);
-    setEditTrack("");
-    setEditArtist("");
-    setEditTags("");
-  }
-
-  function cancelEdit() {
-    setEditingId(null);
-    setEditTrack("");
-    setEditArtist("");
-    setEditTags("");
-  }
-
-  function deleteTrack(id: number) {
-    if (!window.confirm("Delete this track?")) return;
-    setTracks((prev: any) => prev.filter((t: any) => t.id !== id));
-    if (editingId === id) cancelEdit();
-  }
-
-  const sourceBtnClass =
-    "bg-zinc-800 text-zinc-300 hover:bg-zinc-700 border border-zinc-700 min-h-[40px] flex items-center justify-center";
-
-  return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100 p-4 md:p-6">
-      <div className="max-w-6xl mx-auto space-y-6">
-        <div className="flex items-center justify-between border-b border-zinc-800 pb-5">
-          <div>
-            <div className="text-2xl md:text-3xl font-semibold tracking-tight">
-              GreatCrates
-            </div>
-            <div className="text-sm text-zinc-400 mt-1">
-              Capture. Organize. Build your set.
-            </div>
-          </div>
-
-          {!isMobile && (
-            <Button
-              onClick={emailList}
-              className="bg-zinc-100 text-zinc-900 hover:bg-zinc-200"
-            >
-              Email List
-            </Button>
-          )}
-        </div>
-
-        {isMobile ? (
-          <div className="space-y-4">
-            <div className="p-4 bg-zinc-900 rounded-2xl border border-zinc-800 space-y-3">
-              <div className="text-sm font-medium">Quick Capture</div>
-
-              <Input
-                ref={inputRef}
-                value={track}
-                onChange={(e) => setTrack(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && addTrack()}
-                placeholder="Add track..."
-                className="text-lg py-3"
-              />
-
-              <Input
-                value={artist}
-                onChange={(e) => setArtist(e.target.value)}
-                placeholder="Artist"
-              />
-
-              <Input
-                value={tags}
-                onChange={(e) => setTags(e.target.value)}
-                placeholder="Tags"
-              />
-
-              <div className="flex gap-2 flex-wrap">
-                {starterTags.map((tag) => (
-                  <button
-                    key={tag}
-                    onClick={() =>
-                      setTags((prev) =>
-                        Array.from(new Set([...normalize(prev), tag])).join(", ")
-                      )
-                    }
-                    className="px-2 py-1 text-xs border border-zinc-700 rounded-full bg-zinc-900 hover:bg-zinc-800"
-                  >
-                    #{tag}
-                  </button>
-                ))}
-              </div>
-
+            <div className="flex gap-2">
               <Button
-                onClick={addTrack}
-                className="w-full bg-zinc-100 text-zinc-900 hover:bg-zinc-200"
+                onClick={() => saveEdit(t.id)}
+                className="bg-zinc-100 text-zinc-900"
               >
                 Save
               </Button>
 
               <Button
-                onClick={emailList}
-                className="w-full bg-zinc-800 text-zinc-300 hover:bg-zinc-700 border border-zinc-700"
+                onClick={() => setEditingId(null)}
+                className="bg-zinc-800 border border-zinc-700"
               >
-                Email List
+                Cancel
+              </Button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div>
+              <div className="font-medium">{t.track}</div>
+              <div className="text-sm text-zinc-400">
+                {t.artist || "Unknown artist"}
+              </div>
+            </div>
+
+            <div className="flex gap-2 flex-wrap">
+              {t.tags.map((tag) => (
+                <Badge key={tag}>#{tag}</Badge>
+              ))}
+            </div>
+
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+              {Object.entries(getLinks(t.track, t.artist)).map(
+                ([name, url]) => (
+                  <Button
+                    key={name}
+                    onClick={() =>
+                      window.open(url, "_blank")
+                    }
+                    className="bg-zinc-800 border border-zinc-700"
+                  >
+                    {name}
+                  </Button>
+                )
+              )}
+            </div>
+
+            <div className="flex gap-2">
+              <Button
+                onClick={() => startEdit(t)}
+                className="bg-zinc-800 border border-zinc-700"
+              >
+                Edit
+              </Button>
+
+              <Button
+                onClick={() => deleteTrack(t.id)}
+                className="bg-zinc-800 border border-zinc-700"
+              >
+                Delete
+              </Button>
+            </div>
+          </>
+        )}
+      </div>
+    );
+  }
+
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-zinc-950 text-zinc-100 p-6">
+        Loading...
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-zinc-950 text-zinc-100 p-6">
+        <div className="max-w-xl mx-auto space-y-4">
+          <div className="text-3xl font-semibold">
+            GreatCrates
+          </div>
+
+          <div className="p-4 bg-zinc-900 rounded-2xl border border-zinc-800 space-y-3">
+            <div>Sign in to sync your crates</div>
+
+            <Input
+              value={email}
+              onChange={(e: any) => setEmail(e.target.value)}
+              placeholder="Email"
+              type="email"
+            />
+
+            <Button
+              onClick={signIn}
+              className="w-full bg-zinc-100 text-zinc-900"
+            >
+              Send Magic Link
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-zinc-950 text-zinc-100 p-4 md:p-6">
+      <div className="max-w-6xl mx-auto space-y-6">
+        <div className="flex justify-between items-center border-b border-zinc-800 pb-4">
+          <div>
+            <div className="text-3xl font-semibold">
+              GreatCrates
+            </div>
+            <div className="text-sm text-zinc-400">
+              Capture. Organize. Build your set.
+            </div>
+          </div>
+
+          <div className="flex gap-2">
+            <Button
+              onClick={emailList}
+              className="bg-zinc-100 text-zinc-900"
+            >
+              Email List
+            </Button>
+
+            <Button
+              onClick={signOut}
+              className="bg-zinc-800 border border-zinc-700"
+            >
+              Sign Out
+            </Button>
+          </div>
+        </div>
+
+        <div className="grid md:grid-cols-2 gap-6">
+          <div className="space-y-4">
+            <div className="p-4 bg-zinc-900 rounded-2xl border border-zinc-800 space-y-3">
+              <div>Quick Add</div>
+
+              <Input
+                ref={inputRef}
+                value={track}
+                onChange={(e: any) => setTrack(e.target.value)}
+                placeholder="Track"
+              />
+
+              <Input
+                value={artist}
+                onChange={(e: any) => setArtist(e.target.value)}
+                placeholder="Artist"
+              />
+
+              <Input
+                value={tags}
+                onChange={(e: any) => setTags(e.target.value)}
+                placeholder="Tags"
+              />
+
+              <Button
+                onClick={addTrack}
+                className="bg-zinc-100 text-zinc-900"
+              >
+                Add Track
               </Button>
             </div>
 
             <div className="space-y-2">
-              <div className="text-sm text-zinc-400">
-                Saved Tracks ({tracks.length})
-              </div>
-
-              {tracks.map((t: any) => (
-                <div
-                  key={t.id}
-                  className="p-3 bg-zinc-900 rounded-xl border border-zinc-800 space-y-2"
-                >
-                  {editingId === t.id ? (
-                    <>
-                      <Input
-                        value={editTrack}
-                        onChange={(e) => setEditTrack(e.target.value)}
-                        placeholder="Track"
-                      />
-                      <Input
-                        value={editArtist}
-                        onChange={(e) => setEditArtist(e.target.value)}
-                        placeholder="Artist"
-                      />
-                      <Input
-                        value={editTags}
-                        onChange={(e) => setEditTags(e.target.value)}
-                        placeholder="Tags"
-                      />
-                      <div className="flex gap-2">
-                        <Button
-                          onClick={() => saveEdit(t.id)}
-                          className="bg-zinc-100 text-zinc-900 hover:bg-zinc-200"
-                        >
-                          Save
-                        </Button>
-                        <Button
-                          onClick={cancelEdit}
-                          className="bg-zinc-800 text-zinc-300 hover:bg-zinc-700 border border-zinc-700"
-                        >
-                          Cancel
-                        </Button>
-                      </div>
-                    </>
-                  ) : (
-                    <>
-                      <div className="font-medium">{t.track}</div>
-                      <div className="text-sm text-zinc-400">
-                        {t.artist || "Unknown artist"}
-                      </div>
-
-                      <div className="flex gap-2 flex-wrap">
-                        {(t.tags || []).map((tag: string) => (
-                          <Badge key={tag}>#{tag}</Badge>
-                        ))}
-                      </div>
-
-                      <div className="flex gap-2">
-                        <Button
-                          onClick={() => startEdit(t)}
-                          className="bg-zinc-800 text-zinc-300 hover:bg-zinc-700 border border-zinc-700"
-                        >
-                          Edit
-                        </Button>
-                        <Button
-                          onClick={() => deleteTrack(t.id)}
-                          className="bg-zinc-800 text-zinc-300 hover:bg-zinc-700 border border-zinc-700"
-                        >
-                          Delete
-                        </Button>
-                      </div>
-                    </>
-                  )}
-                </div>
-              ))}
+              {loadingTracks
+                ? "Loading..."
+                : tracks.map((t) => <Card key={t.id} t={t} />)}
             </div>
           </div>
-        ) : (
-          <div className="grid md:grid-cols-2 gap-6">
-            <div className="space-y-4">
-              <div className="p-4 bg-zinc-900 rounded-2xl border border-zinc-800 space-y-3">
-                <div className="text-sm font-medium">Quick Add</div>
 
-                <Input
-                  ref={inputRef}
-                  value={track}
-                  onChange={(e) => setTrack(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && addTrack()}
-                  placeholder="Track"
-                />
+          <div className="space-y-4">
+            <Input
+              value={search}
+              onChange={(e: any) => setSearch(e.target.value)}
+              placeholder="Search tracks or artists"
+            />
 
-                <Input
-                  value={artist}
-                  onChange={(e) => setArtist(e.target.value)}
-                  placeholder="Artist"
-                />
-
-                <Input
-                  value={tags}
-                  onChange={(e) => setTags(e.target.value)}
-                  placeholder="Tags"
-                />
-
-                <div className="flex gap-2 flex-wrap">
-                  {starterTags.map((tag) => (
-                    <button
-                      key={tag}
-                      onClick={() =>
-                        setTags((prev) =>
-                          Array.from(new Set([...normalize(prev), tag])).join(", ")
-                        )
-                      }
-                      className="px-2 py-1 text-xs border border-zinc-700 rounded-full bg-zinc-900 hover:bg-zinc-800"
-                    >
-                      #{tag}
-                    </button>
-                  ))}
-                </div>
-
-                <Button
-                  onClick={addTrack}
-                  className="bg-zinc-100 text-zinc-900 hover:bg-zinc-200"
-                >
-                  Add Track
-                </Button>
-              </div>
-
-              <div className="space-y-2">
-                <div className="text-sm text-zinc-400">
-                  Saved Tracks ({tracks.length})
-                </div>
-
-                {tracks.map((t: any) => (
-                  <div
-                    key={t.id}
-                    className="p-3 bg-zinc-900 rounded-xl border border-zinc-800 space-y-2"
-                  >
-                    {editingId === t.id ? (
-                      <>
-                        <Input
-                          value={editTrack}
-                          onChange={(e) => setEditTrack(e.target.value)}
-                          placeholder="Track"
-                        />
-                        <Input
-                          value={editArtist}
-                          onChange={(e) => setEditArtist(e.target.value)}
-                          placeholder="Artist"
-                        />
-                        <Input
-                          value={editTags}
-                          onChange={(e) => setEditTags(e.target.value)}
-                          placeholder="Tags"
-                        />
-                        <div className="flex gap-2">
-                          <Button
-                            onClick={() => saveEdit(t.id)}
-                            className="bg-zinc-100 text-zinc-900 hover:bg-zinc-200"
-                          >
-                            Save
-                          </Button>
-                          <Button
-                            onClick={cancelEdit}
-                            className="bg-zinc-800 text-zinc-300 hover:bg-zinc-700 border border-zinc-700"
-                          >
-                            Cancel
-                          </Button>
-                        </div>
-                      </>
-                    ) : (
-                      <>
-                        <div className="font-medium">{t.track}</div>
-                        <div className="text-sm text-zinc-400">
-                          {t.artist || "Unknown artist"}
-                        </div>
-
-                        <div className="flex gap-2 flex-wrap">
-                          {(t.tags || []).map((tag: string) => (
-                            <Badge key={tag}>#{tag}</Badge>
-                          ))}
-                        </div>
-
-                        <div className="flex gap-2">
-                          <Button
-                            onClick={() => startEdit(t)}
-                            className="bg-zinc-800 text-zinc-300 hover:bg-zinc-700 border border-zinc-700"
-                          >
-                            Edit
-                          </Button>
-                          <Button
-                            onClick={() => deleteTrack(t.id)}
-                            className="bg-zinc-800 text-zinc-300 hover:bg-zinc-700 border border-zinc-700"
-                          >
-                            Delete
-                          </Button>
-                        </div>
-                      </>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="space-y-4">
-              <Input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search tracks, artists, or hashtags"
-              />
-
-              <div className="flex items-center justify-between">
-                <div className="text-sm text-zinc-400">Filter by hashtag</div>
+            <div className="flex flex-wrap gap-2">
+              {allTags.map((tag) => (
                 <button
-                  onClick={clearFilters}
-                  className="text-xs text-zinc-400 hover:text-zinc-200"
+                  key={tag}
+                  onClick={() => toggleTag(tag)}
+                  className={`px-2 py-1 text-xs rounded-full border ${
+                    activeTags.includes(tag)
+                      ? "bg-zinc-100 text-zinc-900 border-zinc-100"
+                      : "bg-zinc-900 text-zinc-300 border-zinc-700"
+                  }`}
                 >
-                  Clear filters
+                  #{tag}
                 </button>
-              </div>
+              ))}
 
-              <div className="flex flex-wrap gap-2">
-                {allTags.map((tag) => (
-                  <button
-                    key={tag}
-                    onClick={() => toggleTag(tag)}
-                    className={`px-2 py-1 text-xs rounded-full border ${
-                      activeTags.includes(tag)
-                        ? "bg-zinc-100 text-zinc-900 border-zinc-100"
-                        : "bg-zinc-900 text-zinc-300 border-zinc-700"
-                    }`}
-                  >
-                    #{tag}
-                  </button>
-                ))}
-              </div>
+              <button
+                onClick={clearFilters}
+                className="text-xs text-zinc-400"
+              >
+                Clear
+              </button>
+            </div>
 
-              <div className="text-sm text-zinc-400">
-                {filtered.length} matching track{filtered.length === 1 ? "" : "s"}
-              </div>
-
-              {filtered.map((t: any) => (
-                <div
-                  key={t.id}
-                  className="p-3 bg-zinc-900 rounded-xl border border-zinc-800 space-y-3"
-                >
-                  <div>
-                    <div className="font-medium">{t.track}</div>
-                    <div className="text-sm text-zinc-400">
-                      {t.artist || "Unknown artist"}
-                    </div>
-                  </div>
-
-                  <div className="flex gap-2 flex-wrap">
-                    {(t.tags || []).map((tag: string) => (
-                      <button
-                        key={tag}
-                        onClick={() => toggleTag(tag)}
-                        className="px-2 py-1 text-xs rounded-full bg-zinc-800 text-zinc-200"
-                      >
-                        #{tag}
-                      </button>
-                    ))}
-                  </div>
-
-                  <div className="grid grid-cols-2 lg:grid-cols-3 gap-2">
-                    <Button
-                      className={sourceBtnClass}
-                      onClick={() =>
-                        window.open(getLinks(t.track, t.artist).spotify, "_blank")
-                      }
-                    >
-                      Spotify
-                    </Button>
-                    <Button
-                      className={sourceBtnClass}
-                      onClick={() =>
-                        window.open(getLinks(t.track, t.artist).apple, "_blank")
-                      }
-                    >
-                      Apple
-                    </Button>
-                    <Button
-                      className={sourceBtnClass}
-                      onClick={() =>
-                        window.open(getLinks(t.track, t.artist).amazon, "_blank")
-                      }
-                    >
-                      Amazon
-                    </Button>
-                    <Button
-                      className={sourceBtnClass}
-                      onClick={() =>
-                        window.open(getLinks(t.track, t.artist).discogs, "_blank")
-                      }
-                    >
-                      Discogs
-                    </Button>
-                    <Button
-                      className={sourceBtnClass}
-                      onClick={() =>
-                        window.open(getLinks(t.track, t.artist).ebay, "_blank")
-                      }
-                    >
-                      eBay
-                    </Button>
-                    <Button
-                      className={sourceBtnClass}
-                      onClick={() =>
-                        window.open(getLinks(t.track, t.artist).stores, "_blank")
-                      }
-                    >
-                      Stores
-                    </Button>
-                  </div>
-                </div>
+            <div className="space-y-2">
+              {filtered.map((t) => (
+                <Card key={t.id} t={t} />
               ))}
             </div>
           </div>
-        )}
+        </div>
       </div>
     </div>
   );
